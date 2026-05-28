@@ -1,0 +1,22 @@
+# Секреты — никогда не пушить
+.env
+credentials.json
+
+# База данных
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
