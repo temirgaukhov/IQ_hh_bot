@@ -331,7 +331,8 @@ async def handle_spec_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     user_id = update.effective_user.id
     access_key = await _get_access_key(context, user_id)
-    log_filter_usage(access_key, user_id, SPEC_FIELD, specialty)
+    # Логируем только первый этап (Направление), не конкретную специальность
+    log_filter_usage(access_key, user_id, DIR_FIELD, direction)
 
     count = len(filter_alumni(filters))
     await query.edit_message_text(
@@ -365,9 +366,13 @@ async def handle_filter_select(update: Update, context: ContextTypes.DEFAULT_TYP
 
     field = query.data.split(":", 1)[1]
 
+    active_filters = context.user_data.get("filters", {})
+
     # ── Этап 1 для Специальности: показываем список Направлений ──
     if field == SPEC_FIELD:
-        directions = get_unique_values(DIR_FIELD)
+        # Исключаем оба поля Специальности из фильтров при выборе направления
+        base = {k: v for k, v in active_filters.items() if k not in (DIR_FIELD, SPEC_FIELD)}
+        directions = get_unique_values(DIR_FIELD, base or None)
         context.user_data["spec_directions"] = directions
         rows = []
         for i, d in enumerate(directions):
@@ -380,8 +385,10 @@ async def handle_filter_select(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ── Обычные фильтры ──
-    values = get_unique_values(field)
+    # ── Обычные фильтры: показываем значения из уже отфильтрованного датасета ──
+    # Исключаем само открываемое поле, чтобы не ограничивать список текущим значением
+    base = {k: v for k, v in active_filters.items() if k != field}
+    values = get_unique_values(field, base or None)
     context.user_data["selecting_field"] = field
     context.user_data["field_options"] = values
 

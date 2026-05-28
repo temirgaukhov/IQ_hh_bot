@@ -8,7 +8,7 @@ from config import CREDENTIALS_FILE, SPREADSHEET_ID
 logger = logging.getLogger(__name__)
 
 _SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",   # read + write
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
@@ -85,8 +85,9 @@ def get_alumni_data() -> list[dict]:
     return _alumni_cache
 
 
-def get_unique_values(field: str) -> list[str]:
-    data = get_alumni_data()
+def get_unique_values(field: str, filters: dict[str, str] | None = None) -> list[str]:
+    """Уникальные значения поля. Если переданы filters — из уже отфильтрованного датасета."""
+    data = filter_alumni(filters) if filters else get_alumni_data()
     seen: set[str] = set()
     result: list[str] = []
     for row in data:
@@ -111,3 +112,19 @@ def filter_alumni(filters: dict[str, str]) -> list[dict]:
 def invalidate_alumni_cache() -> None:
     global _alumni_cache
     _alumni_cache = None
+
+
+def append_to_filter_report(rows: list[list]) -> None:
+    """Дописывает строки в вкладку 'Отчет по фильтрам'.
+    Каждая строка: [Попечитель, User_id, Категория, Фильтр]
+    """
+    ws = _get_spreadsheet().worksheet("Отчет по фильтрам")
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+
+def append_to_fio_report(rows: list[list]) -> None:
+    """Дописывает строки в вкладку 'Отчет по ФИО'.
+    Каждая строка: [Попечитель, User_id, Соискатель, Статус]
+    """
+    ws = _get_spreadsheet().worksheet("Отчет по ФИО")
+    ws.append_rows(rows, value_input_option="USER_ENTERED")

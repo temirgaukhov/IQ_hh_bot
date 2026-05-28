@@ -24,7 +24,8 @@ def init_db() -> None:
                 user_id      INTEGER NOT NULL DEFAULT 0,
                 filter_field TEXT NOT NULL,
                 filter_value TEXT NOT NULL,
-                used_at      TEXT NOT NULL
+                used_at      TEXT NOT NULL,
+                synced       INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS download_stats (
@@ -34,13 +35,24 @@ def init_db() -> None:
                 full_name     TEXT NOT NULL,
                 downloaded_at TEXT NOT NULL
             );
+
+            -- Лог уникальных скачиваний, уже записанных в "Отчет по ФИО"
+            CREATE TABLE IF NOT EXISTS fio_report_log (
+                user_id   INTEGER NOT NULL,
+                full_name TEXT NOT NULL,
+                PRIMARY KEY (user_id, full_name)
+            );
         """)
-        # Миграция: добавить user_id в существующие таблицы если его нет
+        # Миграция: добавить колонки если их нет
         for table in ("filter_stats", "download_stats"):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
-                pass  # колонка уже существует
+                pass
+        try:
+            conn.execute("ALTER TABLE filter_stats ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_user(user_id: int) -> sqlite3.Row | None:
@@ -94,3 +106,48 @@ def get_download_stats() -> list[sqlite3.Row]:
             GROUP BY full_name
             ORDER BY cnt DESC
         """).fetchall()
+
+
+def get_unsynced_filter_stats() -> list[sqlite3.Row]:
+    """Возвращает записи filter_stats ещё не отправленные в Google Sheets."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM filter_stats WHERE synced = 0 ORDER BY used_at"
+        ).fetchall()
+
+
+def mark_filter_stats_synced(ids: list[int]) -> None:
+    """Помечает записи как отправленные в Google Sheets."""
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE filter_stats SET synced = 1 WHERE id IN ({placeholders})", ids
+        )
+
+
+def get_new_unique_downloads() -> list[sqlite3.Row]:
+    """Возвращает уникальные (user_id, full_name, access_key),
+    которые ещё НЕ были записаны в 'Отчет по ФИО'."""
+    with _connect() as conn:
+        return conn.execute("""
+            SELECT DISTINCT ds.user_id, ds.full_name, ds.access_key
+            FROM download_stats ds
+            WHERE NOT EXISTS (
+                SELECT 1 FROM fio_report_log frl
+                WHERE frl.user_id = ds.user_id
+                  AND frl.full_name = ds.full_name
+            )
+        """).fetchall()
+
+
+def mark_fio_reported(pairs: list[tuple[int, str]]) -> None:
+    """Записывает в лог, что (user_id, full_name) уже отправлен в Sheets."""
+    if not pairs:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO fio_report_log (user_id, full_name) VALUES (?, ?)",
+            pairs,
+        )
