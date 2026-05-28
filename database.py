@@ -38,8 +38,9 @@ def init_db() -> None:
 
             -- Лог уникальных скачиваний, уже записанных в "Отчет по ФИО"
             CREATE TABLE IF NOT EXISTS fio_report_log (
-                user_id   INTEGER NOT NULL,
-                full_name TEXT NOT NULL,
+                user_id     INTEGER NOT NULL,
+                full_name   TEXT NOT NULL,
+                synced_date TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (user_id, full_name)
             );
         """)
@@ -51,6 +52,10 @@ def init_db() -> None:
                 pass
         try:
             conn.execute("ALTER TABLE filter_stats ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE fio_report_log ADD COLUMN synced_date TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass
 
@@ -127,27 +132,37 @@ def mark_filter_stats_synced(ids: list[int]) -> None:
         )
 
 
-def get_new_unique_downloads() -> list[sqlite3.Row]:
-    """Возвращает уникальные (user_id, full_name, access_key),
-    которые ещё НЕ были записаны в 'Отчет по ФИО'."""
+def get_fio_to_sync() -> list[sqlite3.Row]:
+    """Возвращает записи, которые нужно записать или обновить в 'Отчет по ФИО':
+    - новые: (user_id, full_name) ещё нет в логе
+    - обновлённые: последняя загрузка новее чем synced_date в логе
+    Поле action = 'new' | 'update'.
+    """
     with _connect() as conn:
         return conn.execute("""
-            SELECT DISTINCT ds.user_id, ds.full_name, ds.access_key
+            SELECT ds.user_id,
+                   ds.full_name,
+                   ds.access_key,
+                   MAX(ds.downloaded_at) AS latest_date,
+                   CASE WHEN frl.user_id IS NULL THEN 'new' ELSE 'update' END AS action
             FROM download_stats ds
-            WHERE NOT EXISTS (
-                SELECT 1 FROM fio_report_log frl
-                WHERE frl.user_id = ds.user_id
-                  AND frl.full_name = ds.full_name
-            )
+            LEFT JOIN fio_report_log frl
+                   ON ds.user_id   = frl.user_id
+                  AND ds.full_name = frl.full_name
+            GROUP BY ds.user_id, ds.full_name, ds.access_key
+            HAVING frl.user_id IS NULL
+                OR MAX(ds.downloaded_at) > frl.synced_date
+            ORDER BY latest_date
         """).fetchall()
 
 
-def mark_fio_reported(pairs: list[tuple[int, str]]) -> None:
-    """Записывает в лог, что (user_id, full_name) уже отправлен в Sheets."""
-    if not pairs:
+def upsert_fio_report_log(entries: list[tuple[int, str, str]]) -> None:
+    """Сохраняет дату синхронизации. entries: [(user_id, full_name, synced_date)]"""
+    if not entries:
         return
     with _connect() as conn:
         conn.executemany(
-            "INSERT OR IGNORE INTO fio_report_log (user_id, full_name) VALUES (?, ?)",
-            pairs,
+            """INSERT INTO fio_report_log (user_id, full_name, synced_date) VALUES (?, ?, ?)
+               ON CONFLICT(user_id, full_name) DO UPDATE SET synced_date = excluded.synced_date""",
+            entries,
         )

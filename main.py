@@ -11,13 +11,19 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
+from datetime import datetime
+
 from database import (
     init_db,
     get_unsynced_filter_stats, mark_filter_stats_synced,
-    get_new_unique_downloads, mark_fio_reported,
+    get_fio_to_sync, upsert_fio_report_log,
 )
-from handlers.admin import admin_stats
-from handlers.auth import AWAITING_KEY, check_key, show_main_menu, start
+from handlers.admin import admin_stats, admin_reply
+from handlers.auth import (
+    AWAITING_KEY, AWAITING_NAME, AWAITING_PHONE,
+    check_key, show_main_menu, start,
+    handle_apply_access, handle_retry_key, handle_name_input, handle_phone_input,
+)
 from handlers.search import (
     handle_download_all,
     handle_filter_clear,
@@ -34,7 +40,7 @@ from handlers.search import (
     DIR_FIELD,
     SPEC_FIELD,
 )
-from sheets import append_to_filter_report, append_to_fio_report, get_trustee
+from sheets import append_to_filter_report, upsert_fio_report, get_trustee, warm_cache
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -79,29 +85,41 @@ async def _sync_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error("Ошибка синхронизации фильтров: %s", exc)
 
     # ── Отчет по ФИО ───────────────────────────────────────────────────
-    new_downloads = get_new_unique_downloads()
-    if new_downloads:
-        fio_rows: list[list] = []
-        reported_pairs: list[tuple[int, str]] = []
+    fio_to_sync = get_fio_to_sync()
+    if fio_to_sync:
+        fio_rows: list[dict] = []
+        log_entries: list[tuple[int, str, str]] = []
 
-        for row in new_downloads:
+        for row in fio_to_sync:
+            date_str = datetime.fromisoformat(row["latest_date"]).strftime("%d.%m.%Y")
             trustee = get_trustee(row["access_key"])
-            fio_rows.append([trustee, row["user_id"], row["full_name"], "Просмотрен"])
-            reported_pairs.append((row["user_id"], row["full_name"]))
+            fio_rows.append({
+                "trustee":   trustee,
+                "user_id":   row["user_id"],
+                "full_name": row["full_name"],
+                "date":      date_str,
+                "action":    row["action"],
+            })
+            log_entries.append((row["user_id"], row["full_name"], row["latest_date"]))
 
         try:
-            append_to_fio_report(fio_rows)
-            mark_fio_reported(reported_pairs)
-            logger.info("Отчет по ФИО: добавлено %d строк", len(fio_rows))
+            upsert_fio_report(fio_rows)
+            upsert_fio_report_log(log_entries)
+            logger.info("Отчет по ФИО: обработано %d записей", len(fio_rows))
         except Exception as exc:
             logger.error("Ошибка синхронизации ФИО: %s", exc)
+
+
+async def _post_init(app: Application) -> None:
+    """Вызывается после инициализации бота, до начала поллинга."""
+    warm_cache()
 
 
 def main() -> None:
     init_db()
     logger.info("Database initialised")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
 
     # ------------------------------------------------------------------
     # Auth conversation (only active until user enters a valid key once)
@@ -110,8 +128,16 @@ def main() -> None:
         entry_points=[CommandHandler("start", start)],
         states={
             AWAITING_KEY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, check_key)
-            ]
+                MessageHandler(filters.TEXT & ~filters.COMMAND, check_key),
+                CallbackQueryHandler(handle_retry_key,    pattern=r"^retry_key$"),
+                CallbackQueryHandler(handle_apply_access, pattern=r"^apply_access$"),
+            ],
+            AWAITING_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name_input),
+            ],
+            AWAITING_PHONE: [
+                MessageHandler(filters.CONTACT, handle_phone_input),
+            ],
         },
         fallbacks=[CommandHandler("start", start)],
         per_message=False,
@@ -119,9 +145,10 @@ def main() -> None:
     app.add_handler(conv)
 
     # ------------------------------------------------------------------
-    # Admin command
+    # Admin commands
     # ------------------------------------------------------------------
     app.add_handler(CommandHandler("admin", admin_stats))
+    app.add_handler(CommandHandler("reply", admin_reply))
 
     # ------------------------------------------------------------------
     # Inline keyboard callbacks

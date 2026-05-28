@@ -114,6 +114,21 @@ def invalidate_alumni_cache() -> None:
     _alumni_cache = None
 
 
+def warm_cache() -> None:
+    """Принудительно загружает обе таблицы в кэш. Вызывается при старте бота."""
+    logger.info("Warming up cache…")
+    try:
+        get_registry_data()
+        logger.info("Registry cache ready")
+    except Exception as exc:
+        logger.error("Failed to warm registry cache: %s", exc)
+    try:
+        get_alumni_data()
+        logger.info("Alumni cache ready")
+    except Exception as exc:
+        logger.error("Failed to warm alumni cache: %s", exc)
+
+
 def append_to_filter_report(rows: list[list]) -> None:
     """Дописывает строки в вкладку 'Отчет по фильтрам'.
     Каждая строка: [Попечитель, User_id, Категория, Фильтр]
@@ -122,9 +137,40 @@ def append_to_filter_report(rows: list[list]) -> None:
     ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
-def append_to_fio_report(rows: list[list]) -> None:
-    """Дописывает строки в вкладку 'Отчет по ФИО'.
-    Каждая строка: [Попечитель, User_id, Соискатель, Статус]
+def append_to_requests(row: list) -> None:
+    """Записывает заявку во вкладку 'Заявки': [user_id, Попечитель, Телефон]."""
+    ws = _get_spreadsheet().worksheet("Заявки")
+    ws.append_rows([row], value_input_option="USER_ENTERED")
+
+
+def upsert_fio_report(rows: list[dict]) -> None:
+    """Вставляет новые строки или обновляет дату в существующих.
+    Каждый элемент rows: {'trustee', 'user_id', 'full_name', 'date', 'action'}
+    action = 'new' → append; action = 'update' → найти строку и обновить дату (кол. E).
+    Структура листа: A=Попечитель B=user_id C=Соискатель D=Статус E=Дата
     """
     ws = _get_spreadsheet().worksheet("Отчет по ФИО")
-    ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+    # Загружаем существующие данные один раз для поиска строк
+    existing = ws.get_all_values()          # [[header], [row], ...]
+    # Индекс: (str(user_id), full_name) → номер строки в листе (1-based)
+    row_index: dict[tuple, int] = {}
+    for i, row in enumerate(existing[1:], start=2):   # пропускаем заголовок
+        if len(row) >= 3:
+            row_index[(row[1].strip(), row[2].strip())] = i
+
+    to_append: list[list] = []
+    cell_updates: list[dict] = []
+
+    for r in rows:
+        key = (str(r["user_id"]), r["full_name"])
+        if r["action"] == "update" and key in row_index:
+            sheet_row = row_index[key]
+            cell_updates.append({"range": f"E{sheet_row}", "values": [[r["date"]]]})
+        else:
+            to_append.append([r["trustee"], r["user_id"], r["full_name"], "Просмотрен", r["date"]])
+
+    if cell_updates:
+        ws.batch_update(cell_updates)
+    if to_append:
+        ws.append_rows(to_append, value_input_option="USER_ENTERED")
