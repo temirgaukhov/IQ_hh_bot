@@ -19,7 +19,8 @@ _alumni_cache: list[dict] | None = None
 _alumni_cache_ts: float = 0
 _ALUMNI_TTL = 300  # 5 минут
 
-_registry_cache: list[str] | None = None
+# Реестр: {БИН: Попечитель}
+_registry_cache: dict[str, str] | None = None
 _registry_cache_ts: float = 0
 _REGISTRY_TTL = 60  # 1 минута
 
@@ -47,20 +48,30 @@ def _get_spreadsheet() -> gspread.Spreadsheet:
     return _get_client().open_by_key(SPREADSHEET_ID)
 
 
-def get_registry_keys() -> list[str]:
+def get_registry_data() -> dict[str, str]:
+    """Возвращает словарь {БИН: Попечитель}."""
     global _registry_cache, _registry_cache_ts
     now = time.time()
     if _registry_cache is None or now - _registry_cache_ts > _REGISTRY_TTL:
         ws = _get_spreadsheet().worksheet("Реестр")
-        values = ws.col_values(1)
-        _registry_cache = [v.strip() for v in values if v.strip()]
+        records = ws.get_all_records()
+        _registry_cache = {
+            str(r.get("БИН", "")).strip(): str(r.get("Попечитель", "")).strip()
+            for r in records
+            if str(r.get("БИН", "")).strip()
+        }
         _registry_cache_ts = now
-        logger.info("Registry cache refreshed: %d keys", len(_registry_cache))
+        logger.info("Registry cache refreshed: %d entries", len(_registry_cache))
     return _registry_cache
 
 
 def is_valid_key(key: str) -> bool:
-    return key in get_registry_keys()
+    return key in get_registry_data()
+
+
+def get_trustee(key: str) -> str:
+    """Возвращает имя попечителя по БИН. Если не найден — возвращает сам ключ."""
+    return get_registry_data().get(key, key)
 
 
 def get_alumni_data() -> list[dict]:

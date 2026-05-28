@@ -199,6 +199,7 @@ async def _download_and_send(
     chat_id: int,
     person: dict,
     access_key: str,
+    user_id: int = 0,
 ) -> bool:
     resume_url = str(person.get("Резюме", "")).strip()
     name = person.get("ФИО", "Без имени")
@@ -238,7 +239,7 @@ async def _download_and_send(
             filename=filename,
             caption=f"📄 {name}",
         )
-        log_download(access_key, name)
+        log_download(access_key, user_id, name)
         return True
 
     except Exception as exc:
@@ -302,8 +303,9 @@ async def handle_spec_all(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     filters[DIR_FIELD] = direction
     filters.pop(SPEC_FIELD, None)
 
-    access_key = await _get_access_key(context, update.effective_user.id)
-    log_filter_usage(access_key, DIR_FIELD, direction)
+    user_id = update.effective_user.id
+    access_key = await _get_access_key(context, user_id)
+    log_filter_usage(access_key, user_id, DIR_FIELD, direction)
 
     count = len(filter_alumni(filters))
     await query.edit_message_text(
@@ -327,8 +329,9 @@ async def handle_spec_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     filters[DIR_FIELD] = direction
     filters[SPEC_FIELD] = specialty
 
-    access_key = await _get_access_key(context, update.effective_user.id)
-    log_filter_usage(access_key, SPEC_FIELD, specialty)
+    user_id = update.effective_user.id
+    access_key = await _get_access_key(context, user_id)
+    log_filter_usage(access_key, user_id, SPEC_FIELD, specialty)
 
     count = len(filter_alumni(filters))
     await query.edit_message_text(
@@ -401,8 +404,9 @@ async def handle_filter_value(update: Update, context: ContextTypes.DEFAULT_TYPE
     if field and 0 <= idx < len(options):
         value = options[idx]
         context.user_data.setdefault("filters", {})[field] = value
-        access_key = await _get_access_key(context, update.effective_user.id)
-        log_filter_usage(access_key, field, value)
+        uid = update.effective_user.id
+        access_key = await _get_access_key(context, uid)
+        log_filter_usage(access_key, uid, field, value)
 
     filters = context.user_data.get("filters", {})
     count = len(filter_alumni(filters))
@@ -499,8 +503,9 @@ async def handle_result_download(update: Update, context: ContextTypes.DEFAULT_T
     if idx >= len(results):
         return
 
-    access_key = await _get_access_key(context, update.effective_user.id)
-    await _download_and_send(context, update.effective_chat.id, results[idx], access_key)
+    uid = update.effective_user.id
+    access_key = await _get_access_key(context, uid)
+    await _download_and_send(context, update.effective_chat.id, results[idx], access_key, uid)
 
 
 async def handle_download_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -511,7 +516,8 @@ async def handle_download_all(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not results:
         return
 
-    access_key = await _get_access_key(context, update.effective_user.id)
+    uid = update.effective_user.id
+    access_key = await _get_access_key(context, uid)
     chat_id = update.effective_chat.id
     total = len(results)
 
@@ -533,7 +539,7 @@ async def handle_download_all(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             pass
 
-        ok = await _download_and_send(context, chat_id, person, access_key)
+        ok = await _download_and_send(context, chat_id, person, access_key, uid)
         if ok:
             success += 1
         else:

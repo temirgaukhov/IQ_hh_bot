@@ -13,7 +13,7 @@ def init_db() -> None:
     with _connect() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id   INTEGER PRIMARY KEY,
+                user_id    INTEGER PRIMARY KEY,
                 access_key TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -21,18 +21,26 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS filter_stats (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 access_key   TEXT NOT NULL,
+                user_id      INTEGER NOT NULL DEFAULT 0,
                 filter_field TEXT NOT NULL,
                 filter_value TEXT NOT NULL,
                 used_at      TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS download_stats (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                access_key   TEXT NOT NULL,
-                full_name    TEXT NOT NULL,
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                access_key    TEXT NOT NULL,
+                user_id       INTEGER NOT NULL DEFAULT 0,
+                full_name     TEXT NOT NULL,
                 downloaded_at TEXT NOT NULL
             );
         """)
+        # Миграция: добавить user_id в существующие таблицы если его нет
+        for table in ("filter_stats", "download_stats"):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # колонка уже существует
 
 
 def get_user(user_id: int) -> sqlite3.Row | None:
@@ -50,37 +58,38 @@ def save_user(user_id: int, access_key: str) -> None:
         )
 
 
-def log_filter_usage(access_key: str, filter_field: str, filter_value: str) -> None:
+def log_filter_usage(access_key: str, user_id: int, filter_field: str, filter_value: str) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO filter_stats (access_key, filter_field, filter_value, used_at) "
-            "VALUES (?, ?, ?, ?)",
-            (access_key, filter_field, filter_value, datetime.now().isoformat()),
+            "INSERT INTO filter_stats (access_key, user_id, filter_field, filter_value, used_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (access_key, user_id, filter_field, filter_value, datetime.now().isoformat()),
         )
 
 
-def log_download(access_key: str, full_name: str) -> None:
+def log_download(access_key: str, user_id: int, full_name: str) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO download_stats (access_key, full_name, downloaded_at) VALUES (?, ?, ?)",
-            (access_key, full_name, datetime.now().isoformat()),
+            "INSERT INTO download_stats (access_key, user_id, full_name, downloaded_at) "
+            "VALUES (?, ?, ?, ?)",
+            (access_key, user_id, full_name, datetime.now().isoformat()),
         )
 
 
 def get_filter_stats() -> list[sqlite3.Row]:
     with _connect() as conn:
         return conn.execute("""
-            SELECT access_key, filter_field, filter_value, COUNT(*) AS cnt
+            SELECT access_key, user_id, filter_field, filter_value, COUNT(*) AS cnt
             FROM filter_stats
-            GROUP BY access_key, filter_field, filter_value
-            ORDER BY access_key, cnt DESC
+            GROUP BY access_key, user_id, filter_field, filter_value
+            ORDER BY access_key, user_id, cnt DESC
         """).fetchall()
 
 
 def get_download_stats() -> list[sqlite3.Row]:
     with _connect() as conn:
         return conn.execute("""
-            SELECT full_name, COUNT(*) AS cnt
+            SELECT full_name, COUNT(*) AS cnt, COUNT(DISTINCT user_id) AS unique_users
             FROM download_stats
             GROUP BY full_name
             ORDER BY cnt DESC
